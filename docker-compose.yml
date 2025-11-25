@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  channel_monitor:
+    build: .
+    container_name: theleton_monitor
+    restart: unless-stopped
+    volumes:
+      # فایل‌های session و database باید persist شوند
+      - ./new.session:/app/new.session
+      - ./theleton.db:/app/theleton.db
+      - ./config.json:/app/config.json
+      # دایرکتوری برای فایل‌های موقت (flag files)
+      - ./data:/app/data
+    command: python channel_monitor.py
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - theleton_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; exit(0 if os.path.exists('/app/theleton.db') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  admin_bot:
+    build: .
+    container_name: theleton_admin
+    restart: unless-stopped
+    volumes:
+      # دیتابیس مشترک بین دو سرویس
+      - ./theleton.db:/app/theleton.db
+      - ./admin_config.json:/app/admin_config.json
+      # دایرکتوری برای فایل‌های موقت (flag files)
+      - ./data:/app/data
+    command: python admin_bot.py
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - theleton_network
+    depends_on:
+      channel_monitor:
+        condition: service_started
+
+networks:
+  theleton_network:
+    driver: bridge
+
