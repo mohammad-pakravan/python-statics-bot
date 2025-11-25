@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Telethon Session Files
+*.session
+*.session-journal
+new.session
+*.session.*
+
+# Database Files
+*.db
+*.sqlite
+*.sqlite3
+theleton.db
+theleton.db-journal
+
+# Configuration Files (may contain sensitive data)
+config.json
+admin_config.json
+
+# Flag and Notification Files (temporary inter-process communication)
+*.flag
+trigger_check.flag
+join_channel.flag
+leave_channel.flag
+check_notification.json
+
+# Excel Output Files
+*.xlsx
+channel_stats_*.xlsx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Temporary Files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# OS
+Thumbs.db
+Desktop.ini
+

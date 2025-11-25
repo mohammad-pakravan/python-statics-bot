@@ -1,0 +1,688 @@
+"""
+ربات Telethon برای رصد کانال‌ها و ثبت آمار
+"""
+import asyncio
+import json
+import os
+import sys
+from datetime import datetime
+from telethon import TelegramClient
+from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, UsernameNotOccupiedError
+from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest, LeaveChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+from database import Database
+
+
+class ChannelMonitor:
+    def __init__(self):
+        self.config_file = 'config.json'
+        self.session_file = 'new'
+        self.client = None
+        self.config = self.load_config()
+        self.db = Database()
+        self.trigger_flag_file = 'trigger_check.flag'
+        self.notification_file = 'check_notification.json'
+        self.join_flag_file = 'join_channel.flag'
+        self.leave_flag_file = 'leave_channel.flag'
+        
+    def load_config(self):
+        """بارگذاری تنظیمات از فایل"""
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"خطا در خواندن فایل تنظیمات: {e}")
+                return {}
+        return {}
+    
+    async def setup_client(self):
+        """تنظیم و اتصال کلاینت تلگرام"""
+        # دریافت api_id و api_hash از کاربر اگر وجود نداشته باشد
+        if not self.config.get('api_id') or not self.config.get('api_hash'):
+            print("=== تنظیمات اولیه ===")
+            api_id = input("API ID خود را وارد کنید: ").strip()
+            api_hash = input("API Hash خود را وارد کنید: ").strip()
+            
+            if not api_id or not api_hash:
+                print("خطا: API ID و API Hash ضروری هستند!")
+                sys.exit(1)
+            
+            self.config['api_id'] = api_id
+            self.config['api_hash'] = api_hash
+            self.save_config()
+        
+        try:
+            api_id = int(self.config['api_id'])
+            api_hash = self.config['api_hash']
+        except (ValueError, KeyError):
+            print("خطا: API ID یا API Hash نامعتبر است!")
+            sys.exit(1)
+        
+        # ایجاد کلاینت
+        self.client = TelegramClient(self.session_file, api_id, api_hash)
+        
+        # اتصال
+        await self.client.connect()
+        
+        # بررسی احراز هویت
+        if not await self.client.is_user_authorized():
+            print("\n=== احراز هویت ===")
+            await self.authenticate()
+        
+        # تست اتصال
+        me = await self.client.get_me()
+        print(f"\n✅ با موفقیت به حساب '{me.first_name}' متصل شدید!")
+        return True
+    
+    def save_config(self):
+        """ذخیره تنظیمات در فایل"""
+        with open(self.config_file, 'w', encoding='utf-8') as f:
+            json.dump(self.config, f, ensure_ascii=False, indent=2)
+    
+    async def authenticate(self):
+        """احراز هویت کاربر"""
+        phone = input("شماره تلفن خود را وارد کنید (با کد کشور مثلا +989123456789): ").strip()
+        
+        try:
+            await self.client.send_code_request(phone)
+        except Exception as e:
+            print(f"خطا در ارسال کد: {e}")
+            sys.exit(1)
+        
+        code = input("کد ارسال شده را وارد کنید: ").strip()
+        
+        try:
+            await self.client.sign_in(phone, code)
+        except SessionPasswordNeededError:
+            # نیاز به رمز دو مرحله‌ای
+            password = input("رمز دو مرحله‌ای خود را وارد کنید: ").strip()
+            await self.client.sign_in(password=password)
+        except PhoneCodeInvalidError:
+            print("کد وارد شده نامعتبر است!")
+            sys.exit(1)
+        except Exception as e:
+            print(f"خطا در احراز هویت: {e}")
+            sys.exit(1)
+    
+    async def join_channel(self, username_or_link: str) -> tuple:
+        """عضویت در کانال و برگرداندن (success, entity, telegram_id)"""
+        try:
+            entity = None
+            telegram_id = None
+            
+            # بررسی اینکه آیا این یک invite link است
+            if username_or_link.startswith('http') or username_or_link.startswith('t.me/+') or username_or_link.startswith('+'):
+                # این یک invite link است
+                try:
+                    # استخراج hash از لینک
+                    if username_or_link.startswith('http'):
+                        # استخراج hash از URL - برای https://t.me/+ABC123
+                        if '+t.me/+' in username_or_link or '/+' in username_or_link:
+                            # استخراج قسمت بعد از +/
+                            parts = username_or_link.split('+/')
+                            if len(parts) > 1:
+                                hash_part = parts[-1]
+                            else:
+                                hash_part = username_or_link.split('+')[-1]
+                        else:
+                            hash_part = username_or_link.split('/')[-1].lstrip('+')
+                    else:
+                        hash_part = username_or_link.lstrip('+').lstrip('t.me/')
+                    
+                    # چک کردن invite
+                    invite = await self.client(CheckChatInviteRequest(hash_part))
+                    
+                    # اگر نیاز به join دارد
+                    from telethon.tl.types import ChatInvite
+                    if isinstance(invite, ChatInvite):
+                        # پیوستن به کانال
+                        await self.client(ImportChatInviteRequest(hash_part))
+                        # بعد از join، دوباره چک می‌کنیم
+                        invite = await self.client(CheckChatInviteRequest(hash_part))
+                    
+                    # دریافت entity
+                    from telethon.tl.types import ChatInviteAlready
+                    if isinstance(invite, ChatInviteAlready):
+                        entity = invite.chat
+                        telegram_id = entity.id if hasattr(entity, 'id') else None
+                    else:
+                        print(f"⚠️ نتوانستیم به کانال با لینک {username_or_link} بپیوندیم")
+                        return (False, None, None)
+                except Exception as e:
+                    print(f"❌ خطا در پیوستن به کانال با لینک {username_or_link}: {e}")
+                    return (False, None, None)
+            else:
+                # این یک username است
+                username = username_or_link.lstrip('@')
+                try:
+                    entity = await self.client.get_entity(username)
+                    telegram_id = entity.id if hasattr(entity, 'id') else None
+                    
+                    # پیوستن به کانال (اگر عضو نیستیم)
+                    try:
+                        await self.client(JoinChannelRequest(entity))
+                    except Exception as e:
+                        # ممکن است قبلاً عضو باشیم یا خطای دیگری داشته باشیم
+                        error_msg = str(e).lower()
+                        if 'already' in error_msg or 'participant' in error_msg:
+                            # قبلاً عضو هستیم، مشکلی نیست
+                            pass
+                        else:
+                            print(f"⚠️ خطا در پیوستن به کانال @{username}: {e}")
+                except Exception as e:
+                    print(f"❌ خطا در دریافت کانال @{username}: {e}")
+                    return (False, None, None)
+            
+            if entity:
+                return (True, entity, telegram_id)
+            else:
+                return (False, None, None)
+        except Exception as e:
+            print(f"❌ خطا در join_channel: {e}")
+            import traceback
+            traceback.print_exc()
+            return (False, None, None)
+    
+    async def get_channel_stats(self, username_or_link: str, channel_id: int = None) -> dict:
+        """دریافت آمار کانال (پشتیبانی از username و invite link)"""
+        try:
+            entity = None
+            
+            # اگر channel_id داریم، ابتدا سعی می‌کنیم از telegram_id استفاده کنیم
+            if channel_id:
+                channel_info = self.db.get_channel_by_id(channel_id)
+                if channel_info and channel_info.get('telegram_id'):
+                    try:
+                        entity = await self.client.get_entity(channel_info['telegram_id'])
+                    except:
+                        pass  # اگر خطا داد، از username استفاده می‌کنیم
+            
+            # اگر entity پیدا نشد، از username_or_link استفاده می‌کنیم
+            if not entity:
+                # بررسی اینکه آیا این یک invite link است
+                if username_or_link.startswith('http') or username_or_link.startswith('t.me/+') or username_or_link.startswith('+'):
+                    # این یک invite link است
+                    try:
+                        # استخراج hash از لینک
+                        if username_or_link.startswith('http'):
+                            # استخراج hash از URL
+                            if '+t.me/+' in username_or_link or '/+' in username_or_link:
+                                parts = username_or_link.split('+/')
+                                if len(parts) > 1:
+                                    hash_part = parts[-1]
+                                else:
+                                    hash_part = username_or_link.split('+')[-1]
+                            else:
+                                hash_part = username_or_link.split('/')[-1].lstrip('+')
+                        else:
+                            hash_part = username_or_link.lstrip('+').lstrip('t.me/')
+                        
+                        # چک کردن invite
+                        invite = await self.client(CheckChatInviteRequest(hash_part))
+                        
+                        # دریافت entity
+                        from telethon.tl.types import ChatInviteAlready
+                        if isinstance(invite, ChatInviteAlready):
+                            entity = invite.chat
+                    except Exception as e:
+                        print(f"❌ خطا در دریافت کانال با لینک {username_or_link}: {e}")
+                        return None
+                else:
+                    # این یک username است
+                    username = username_or_link.lstrip('@')
+                    try:
+                        entity = await self.client.get_entity(username)
+                    except Exception as e:
+                        print(f"❌ خطا در دریافت کانال @{username}: {e}")
+                        return None
+            
+            if not entity:
+                return None
+            
+            # دریافت اطلاعات کامل کانال
+            full_info = await self.client(GetFullChannelRequest(entity))
+            
+            # دریافت username واقعی (اگر موجود باشد)
+            channel_username = ''
+            if hasattr(entity, 'username') and entity.username:
+                channel_username = entity.username
+            elif hasattr(entity, 'id'):
+                # برای کانال‌های پرایوت، از ID استفاده می‌کنیم
+                channel_username = f"private_{entity.id}"
+            
+            stats = {
+                'title': entity.title,
+                'member_count': full_info.full_chat.participants_count or 0,
+                'views_count': 0,  # این اطلاعات در API موجود نیست
+                'posts_count': 0,  # نیاز به محاسبه جداگانه دارد
+                'username': channel_username or username_or_link,
+                'telegram_id': entity.id if hasattr(entity, 'id') else None
+            }
+            
+            return stats
+        except UsernameNotOccupiedError:
+            print(f"❌ کانال {username_or_link} یافت نشد!")
+            return None
+        except Exception as e:
+            print(f"❌ خطا در دریافت آمار کانال {username_or_link}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    async def monitor_channels(self, triggered_by_user_id=None):
+        """رصد کانال‌ها و ثبت آمار"""
+        # ابتدا سعی می‌کنیم به کانال‌هایی که عضو نیستیم بپیوندیم
+        all_channels = self.db.get_all_active_channels()
+        channels_to_join = [ch for ch in all_channels if not ch.get('is_member', 0)]
+        
+        if channels_to_join:
+            print(f"\n➕ تلاش برای پیوستن به {len(channels_to_join)} کانال...")
+            for channel in channels_to_join:
+                channel_id = channel['id']
+                username = channel['username']
+                invite_link = channel.get('invite_link')
+                channel_identifier = invite_link if invite_link else username
+                print(f"🔄 در حال پیوستن به کانال: {channel_identifier}")
+                await self.process_join_channel(channel_id, channel_identifier)
+                await asyncio.sleep(1)  # تاخیر کوتاه بین join ها
+        
+        # حالا فقط کانال‌هایی که عضو هستیم را بررسی می‌کنیم
+        channels = self.db.get_active_channels()
+        start_time = datetime.now()
+        
+        if not channels:
+            print("⚠️ هیچ کانال فعالی یافت نشد (یا هنوز عضو نشده‌ایم)!")
+            # ایجاد فایل notification برای اطلاع‌رسانی
+            self.create_notification(triggered_by_user_id, start_time, 0, False)
+            return
+        
+        print(f"\n📊 بررسی {len(channels)} کانال...")
+        
+        successful_checks = 0
+        for channel in channels:
+            username = channel['username']
+            channel_id = channel['id']
+            invite_link = channel.get('invite_link')  # ممکن است None باشد
+            
+            # استفاده از invite_link اگر موجود باشد، در غیر این صورت username
+            channel_identifier = invite_link if invite_link else username
+            
+            display_name = invite_link if invite_link else f"@{username}"
+            print(f"\n🔍 بررسی کانال: {display_name}")
+            
+            stats = await self.get_channel_stats(channel_identifier, channel_id)
+            
+            if stats:
+                # اطمینان از اینکه is_member = 1 است (اگر توانستیم آمار بگیریم یعنی عضو هستیم)
+                self.db.set_channel_member_status(channel_id, True)
+                
+                # به‌روزرسانی عنوان در صورت تغییر
+                if stats['title'] and stats['title'] != channel.get('title'):
+                    conn = self.db.get_connection()
+                    cursor = conn.cursor()
+                    cursor.execute('UPDATE channels SET title = ? WHERE id = ?', 
+                                 (stats['title'], channel_id))
+                    conn.commit()
+                    conn.close()
+                
+                # به‌روزرسانی telegram_id اگر موجود باشد
+                if 'telegram_id' in stats and stats['telegram_id']:
+                    self.db.update_channel_telegram_id(channel_id, stats['telegram_id'])
+                
+                # ثبت آمار
+                success = self.db.add_stats(
+                    channel_id=channel_id,
+                    member_count=stats['member_count'],
+                    views_count=stats['views_count'],
+                    posts_count=stats['posts_count']
+                )
+                
+                if success:
+                    successful_checks += 1
+                    last_stats = self.db.get_last_stats(channel_id)
+                    print(f"✅ آمار ثبت شد:")
+                    print(f"   - اعضا: {stats['member_count']:,}")
+                    if last_stats and last_stats.get('member_change'):
+                        change = last_stats['member_change']
+                        sign = "+" if change > 0 else ""
+                        print(f"   - تغییر: {sign}{change:,}")
+                else:
+                    print(f"❌ خطا در ثبت آمار")
+            else:
+                # اگر نتوانستیم آمار بگیریم، ممکن است عضو نباشیم
+                print(f"⚠️ نتوانستیم آمار کانال {display_name} را دریافت کنیم")
+            
+            # تاخیر کوتاه بین درخواست‌ها
+            await asyncio.sleep(2)
+        
+        # بررسی کانال‌های غیرفعال برای خروج
+        await self.leave_inactive_channels()
+        
+        # ایجاد فایل notification بعد از اتمام بررسی
+        end_time = datetime.now()
+        print(f"\n📝 در حال ایجاد notification برای user_id={triggered_by_user_id}...")
+        self.create_notification(triggered_by_user_id, start_time, successful_checks, True)
+        print(f"✅ Notification ایجاد شد برای user_id={triggered_by_user_id}, channels={successful_checks}")
+    
+    async def leave_inactive_channels(self):
+        """خروج از کانال‌های غیرفعال"""
+        channels_to_leave = self.db.get_channels_to_leave()
+        
+        if not channels_to_leave:
+            return
+        
+        print(f"\n🚪 بررسی {len(channels_to_leave)} کانال غیرفعال برای خروج...")
+        
+        for channel in channels_to_leave:
+            telegram_id = channel.get('telegram_id')
+            username = channel['username']
+            channel_id = channel['id']
+            invite_link = channel.get('invite_link')
+            
+            try:
+                entity = None
+                
+                # تلاش برای دریافت entity
+                if telegram_id:
+                    try:
+                        entity = await self.client.get_entity(telegram_id)
+                    except:
+                        pass
+                
+                # اگر با telegram_id نشد، از username یا invite_link استفاده می‌کنیم
+                if not entity:
+                    if invite_link:
+                        try:
+                            # استفاده از join_channel که می‌تواند entity را برگرداند
+                            _, entity, _ = await self.join_channel(invite_link)
+                        except:
+                            pass
+                    elif username and not username.startswith('http') and not username.startswith('+'):
+                        try:
+                            entity = await self.client.get_entity(username)
+                        except:
+                            pass
+                
+                if entity:
+                    try:
+                        await self.client(LeaveChannelRequest(entity))
+                        print(f"✅ از کانال {username} (ID: {telegram_id if telegram_id else 'N/A'}) خارج شدیم")
+                        # علامت‌گذاری که از کانال خارج شدیم (is_member = 0)
+                        self.db.set_channel_member_status(channel_id, False)
+                    except Exception as leave_error:
+                        print(f"❌ خطا در خروج از کانال {username}: {leave_error}")
+                        # حتی در صورت خطا، is_member = 0 می‌کنیم (مثلاً کانال حذف شده)
+                        self.db.set_channel_member_status(channel_id, False)
+                else:
+                    print(f"⚠️ نتوانستیم entity کانال {username} را پیدا کنیم")
+                    # اگر entity پیدا نشد، باز هم is_member = 0 می‌کنیم
+                    self.db.set_channel_member_status(channel_id, False)
+            except Exception as e:
+                print(f"❌ خطا در خروج از کانال {username}: {e}")
+                # حتی در صورت خطا، is_member = 0 می‌کنیم
+                self.db.set_channel_member_status(channel_id, False)
+    
+    def check_trigger_flag(self) -> tuple:
+        """بررسی وجود فایل flag برای بررسی فوری - برمی‌گرداند (exists, user_id)"""
+        if os.path.exists(self.trigger_flag_file):
+            try:
+                # خواندن user_id از فایل flag (اگر وجود دارد)
+                user_id = None
+                try:
+                    with open(self.trigger_flag_file, 'r') as f:
+                        content = f.read().strip()
+                        if content.isdigit():
+                            user_id = int(content)
+                except:
+                    pass
+                
+                os.remove(self.trigger_flag_file)
+                return (True, user_id)
+            except Exception as e:
+                print(f"⚠️ خطا در حذف فایل flag: {e}")
+                return (False, None)
+        return (False, None)
+    
+    def check_join_flag(self) -> dict:
+        """بررسی وجود فایل flag برای join کردن کانال - برمی‌گرداند dict یا None"""
+        if os.path.exists(self.join_flag_file):
+            try:
+                flag_path = os.path.join(os.getcwd(), self.join_flag_file)
+                with open(flag_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # حذف فایل flag
+                os.remove(flag_path)
+                return data
+            except Exception as e:
+                print(f"⚠️ خطا در خواندن فایل join flag: {e}")
+                # حذف فایل نامعتبر
+                try:
+                    os.remove(os.path.join(os.getcwd(), self.join_flag_file))
+                except:
+                    pass
+                return None
+        return None
+    
+    def check_leave_flag(self) -> dict:
+        """بررسی وجود فایل flag برای leave کردن کانال - برمی‌گرداند dict یا None"""
+        if os.path.exists(self.leave_flag_file):
+            try:
+                flag_path = os.path.join(os.getcwd(), self.leave_flag_file)
+                with open(flag_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # حذف فایل flag
+                os.remove(flag_path)
+                return data
+            except Exception as e:
+                print(f"⚠️ خطا در خواندن فایل leave flag: {e}")
+                # حذف فایل نامعتبر
+                try:
+                    os.remove(os.path.join(os.getcwd(), self.leave_flag_file))
+                except:
+                    pass
+                return None
+        return None
+    
+    async def process_leave_channel(self, channel_id: int, username: str):
+        """خروج از کانال به صورت فوری"""
+        try:
+            # دریافت اطلاعات کانال از دیتابیس
+            channel_info = self.db.get_channel_by_id(channel_id)
+            if not channel_info:
+                print(f"⚠️ کانال با ID {channel_id} پیدا نشد")
+                return False
+            
+            telegram_id = channel_info.get('telegram_id')
+            invite_link = channel_info.get('invite_link')
+            
+            entity = None
+            
+            # تلاش برای دریافت entity
+            if telegram_id:
+                try:
+                    entity = await self.client.get_entity(telegram_id)
+                except:
+                    pass
+            
+            # اگر با telegram_id نشد، از username یا invite_link استفاده می‌کنیم
+            if not entity:
+                if invite_link:
+                    try:
+                        _, entity, _ = await self.join_channel(invite_link)
+                    except:
+                        pass
+                elif username and not username.startswith('http') and not username.startswith('+'):
+                    try:
+                        entity = await self.client.get_entity(username)
+                    except:
+                        pass
+            
+            if entity:
+                try:
+                    await self.client(LeaveChannelRequest(entity))
+                    print(f"✅ از کانال {username} خارج شدیم (خروج فوری)")
+                    self.db.set_channel_member_status(channel_id, False)
+                    return True
+                except Exception as e:
+                    print(f"❌ خطا در خروج از کانال {username}: {e}")
+                    # حتی در صورت خطا، is_member = 0 می‌کنیم
+                    self.db.set_channel_member_status(channel_id, False)
+                    return False
+            else:
+                print(f"⚠️ نتوانستیم entity کانال {username} را پیدا کنیم")
+                # حتی اگر entity پیدا نشد، is_member = 0 می‌کنیم
+                self.db.set_channel_member_status(channel_id, False)
+                return False
+        except Exception as e:
+            print(f"❌ خطا در process_leave_channel: {e}")
+            import traceback
+            traceback.print_exc()
+            # حتی در صورت خطا، is_member = 0 می‌کنیم
+            try:
+                self.db.set_channel_member_status(channel_id, False)
+            except:
+                pass
+            return False
+    
+    async def process_join_channel(self, channel_id: int, channel_identifier: str):
+        """پیوندن به کانال و تنظیم is_member"""
+        try:
+            success, entity, telegram_id = await self.join_channel(channel_identifier)
+            
+            if success and entity:
+                # به‌روزرسانی دیتابیس
+                conn = self.db.get_connection()
+                cursor = conn.cursor()
+                
+                # به‌روزرسانی is_member و telegram_id
+                cursor.execute('''
+                    UPDATE channels 
+                    SET is_member = 1, 
+                        telegram_id = ?,
+                        title = COALESCE(?, title)
+                    WHERE id = ?
+                ''', (telegram_id, entity.title if hasattr(entity, 'title') else None, channel_id))
+                
+                conn.commit()
+                conn.close()
+                
+                # به‌روزرسانی telegram_id اگر تغییر کرده
+                if telegram_id:
+                    self.db.update_channel_telegram_id(channel_id, telegram_id)
+                
+                print(f"✅ با موفقیت به کانال {channel_identifier} پیوستیم!")
+                return True
+            else:
+                # اگر نتوانستیم بپیوندیم، is_member = 0 می‌ماند
+                print(f"❌ نتوانستیم به کانال {channel_identifier} بپیوندیم")
+                return False
+        except Exception as e:
+            print(f"❌ خطا در process_join_channel: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def create_notification(self, user_id, start_time, channels_count, success):
+        """ایجاد فایل notification برای اطلاع‌رسانی به کاربر"""
+        try:
+            notification_data = {
+                'user_id': user_id,
+                'timestamp': datetime.now().isoformat(),
+                'start_time': start_time.isoformat(),
+                'channels_count': channels_count,
+                'success': success
+            }
+            notification_path = os.path.join(os.getcwd(), self.notification_file)
+            with open(notification_path, 'w', encoding='utf-8') as f:
+                json.dump(notification_data, f, ensure_ascii=False, indent=2)
+            print(f"📩 فایل notification ایجاد شد در: {notification_path}")
+            print(f"   user_id={user_id}, channels={channels_count}, success={success}")
+        except Exception as e:
+            print(f"⚠️ خطا در ایجاد فایل notification: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    async def run(self):
+        """اجرای اصلی ربات"""
+        try:
+            # تنظیم کلاینت
+            await self.setup_client()
+            
+            print("\n=== ربات رصد کانال شروع به کار کرد ===")
+            print("هر 30 دقیقه کانال‌ها بررسی خواهند شد")
+            print("برای بررسی فوری، فایل trigger_check.flag ایجاد کنید")
+            print("برای توقف ربات، Ctrl+C را فشار دهید\n")
+            
+            # اولین بررسی فوری
+            await self.monitor_channels()
+            
+            # حلقه بررسی دوره‌ای
+            check_interval = 10  # چک کردن هر 10 ثانیه
+            normal_interval = 1800  # 30 دقیقه = 1800 ثانیه
+            time_until_next_check = 0  # زمان باقی‌مانده تا بررسی عادی
+            
+            while True:
+                # چک کردن فایل flag برای leave کردن کانال (اولویت بالاتر)
+                leave_flag_data = self.check_leave_flag()
+                if leave_flag_data:
+                    channel_id = leave_flag_data.get('channel_id')
+                    username = leave_flag_data.get('username')
+                    if channel_id:
+                        print(f"\n🚪 درخواست خروج فوری از کانال: {username} (ID: {channel_id})")
+                        await self.process_leave_channel(channel_id, username)
+                
+                # چک کردن فایل flag برای join کردن کانال
+                join_flag_data = self.check_join_flag()
+                if join_flag_data:
+                    channel_id = join_flag_data.get('channel_id')
+                    channel_identifier = join_flag_data.get('channel_identifier')
+                    if channel_id and channel_identifier:
+                        print(f"\n➕ درخواست پیوستن به کانال: {channel_identifier} (ID: {channel_id})")
+                        await self.process_join_channel(channel_id, channel_identifier)
+                
+                # چک کردن فایل flag برای بررسی فوری
+                flag_exists, user_id = self.check_trigger_flag()
+                if flag_exists:
+                    print(f"\n⚡ بررسی فوری درخواست شده! (user_id: {user_id})")
+                    await self.monitor_channels(triggered_by_user_id=user_id)
+                    print(f"✅ بررسی تمام شد، notification برای user_id={user_id} ایجاد می‌شود...")
+                    time_until_next_check = normal_interval  # ریست کردن تایمر
+                    continue
+                
+                # بررسی اینکه آیا زمان بررسی عادی رسیده است
+                if time_until_next_check <= 0:
+                    print(f"\n⏰ بررسی دوره‌ای (هر 30 دقیقه)")
+                    await self.monitor_channels()
+                    time_until_next_check = normal_interval
+                else:
+                    # چاپ پیام هر 5 دقیقه
+                    if time_until_next_check % 300 == 0 or time_until_next_check == normal_interval:
+                        minutes_left = time_until_next_check // 60
+                        print(f"\n⏳ بررسی بعدی در {minutes_left} دقیقه... (یا بررسی فوری با ایجاد trigger_check.flag)")
+                
+                # انتظار 10 ثانیه
+                await asyncio.sleep(check_interval)
+                time_until_next_check -= check_interval
+                
+        except KeyboardInterrupt:
+            print("\n\n🛑 ربات متوقف شد")
+        except Exception as e:
+            print(f"\n❌ خطای غیرمنتظره: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            if self.client:
+                await self.client.disconnect()
+
+
+async def main():
+    monitor = ChannelMonitor()
+    await monitor.run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
