@@ -928,13 +928,20 @@ class AdminBot:
         if not message:
             return
         
-        # دریافت لیست دسته‌بندی‌های موجود
-        stats = self.db.get_all_stats()
-        categories = set()
-        for stat in stats:
-            category = stat.get('category')
-            if category:
-                categories.add(category)
+        # دریافت لیست همه دسته‌بندی‌های موجود
+        all_categories = self.db.get_all_categories()
+        # دریافت دسته‌بندی‌هایی که کانال فعال دارند
+        categories_with_channels = set(self.db.get_categories_with_active_channels())
+        
+        if not all_categories:
+            await message.reply_text(
+                "❌ هیچ دسته‌بندی موجودی برای خروجی وجود ندارد!\n\n"
+                "لطفاً ابتدا دسته‌بندی ایجاد کنید.",
+                reply_markup=self.get_main_keyboard()
+            )
+            return
+        
+        categories = all_categories
         
         # ساخت کیبورد اینلاین
         keyboard = [
@@ -970,13 +977,8 @@ class AdminBot:
         try:
             await message.edit_text("⏳ در حال ساخت فایل‌های اکسل (همه دسته‌بندی‌ها)...\nلطفاً صبر کنید...")
             
-            # دریافت لیست دسته‌بندی‌ها
-            stats = self.db.get_all_stats()
-            categories = set()
-            for stat in stats:
-                category = stat.get('category')
-                if category:
-                    categories.add(category)
+            # دریافت لیست همه دسته‌بندی‌ها
+            categories = self.db.get_all_categories()
             
             if not categories:
                 await message.edit_text(
@@ -1352,12 +1354,16 @@ class AdminBot:
         elif data == "export_excel":
             await query.answer()
             # نمایش منوی انتخاب نوع خروجی
-            stats = self.db.get_all_stats()
-            categories = set()
-            for stat in stats:
-                category = stat.get('category')
-                if category:
-                    categories.add(category)
+            # دریافت لیست همه دسته‌بندی‌های موجود
+            categories = self.db.get_all_categories()
+            
+            if not categories:
+                await query.edit_message_text(
+                    "❌ هیچ دسته‌بندی موجودی برای خروجی وجود ندارد!\n\n"
+                    "لطفاً ابتدا دسته‌بندی ایجاد کنید.",
+                    reply_markup=self.get_inline_keyboard()
+                )
+                return
             
             # ساخت کیبورد اینلاین
             keyboard = [

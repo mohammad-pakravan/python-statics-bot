@@ -394,6 +394,25 @@ class Database:
         conn.close()
         return all_categories
     
+    def get_categories_with_active_channels(self) -> List[str]:
+        """دریافت لیست دسته‌بندی‌هایی که حداقل یک کانال فعال دارند"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # دریافت دسته‌بندی‌های کانال‌های فعال
+        cursor.execute('''
+            SELECT DISTINCT category 
+            FROM channels 
+            WHERE is_active = 1 
+            AND category IS NOT NULL 
+            AND category != ''
+            ORDER BY category
+        ''')
+        
+        categories = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return categories
+    
     def add_category(self, category_name: str) -> bool:
         """افزودن دسته‌بندی جدید به جدول categories"""
         conn = self.get_connection()
