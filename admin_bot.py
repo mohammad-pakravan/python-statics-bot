@@ -22,6 +22,13 @@ class AdminBot:
         self.config_file = 'admin_config.json'
         self.db = Database()
         self.config = self.load_config()
+        # همگام‌سازی دسته‌بندی‌های موجود از channels به categories
+        try:
+            synced_count = self.db.sync_categories_from_channels()
+            if synced_count > 0:
+                print(f"✅ {synced_count} دسته‌بندی از channels به categories همگام‌سازی شد")
+        except Exception as e:
+            print(f"⚠️ خطا در همگام‌سازی دسته‌بندی‌ها: {e}")
         
     def load_config(self):
         """بارگذاری تنظیمات"""
@@ -74,8 +81,12 @@ class AdminBot:
     def trigger_immediate_check(self, user_id: int = None) -> bool:
         """ایجاد فایل flag برای بررسی فوری کانال‌ها"""
         try:
+            # استفاده از دایرکتوری data برای فایل‌های flag (مشترک بین containers)
+            data_dir = os.path.join(os.getcwd(), 'data')
+            os.makedirs(data_dir, exist_ok=True)
+            
             flag_file = 'trigger_check.flag'
-            flag_path = os.path.join(os.getcwd(), flag_file)
+            flag_path = os.path.join(data_dir, flag_file)
             with open(flag_path, 'w') as f:
                 if user_id:
                     f.write(str(user_id))  # ذخیره user_id در فایل
@@ -84,40 +95,54 @@ class AdminBot:
             return True
         except Exception as e:
             print(f"خطا در ایجاد فایل flag: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def trigger_join_channel(self, channel_id: int, channel_identifier: str):
         """ایجاد فایل flag برای join کردن کانال"""
         try:
+            # استفاده از دایرکتوری data برای فایل‌های flag (مشترک بین containers)
+            data_dir = os.path.join(os.getcwd(), 'data')
+            os.makedirs(data_dir, exist_ok=True)
+            
             join_file = 'join_channel.flag'
-            join_path = os.path.join(os.getcwd(), join_file)
+            join_path = os.path.join(data_dir, join_file)
             join_data = {
                 'channel_id': channel_id,
                 'channel_identifier': channel_identifier
             }
             with open(join_path, 'w', encoding='utf-8') as f:
                 json.dump(join_data, f, ensure_ascii=False, indent=2)
-            print(f"🚩 فایل join_channel.flag ایجاد شد برای channel_id: {channel_id}")
+            print(f"🚩 فایل join_channel.flag ایجاد شد در {join_path} برای channel_id: {channel_id}")
             return True
         except Exception as e:
             print(f"خطا در ایجاد فایل join flag: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def trigger_leave_channel(self, channel_id: int, username: str):
         """ایجاد فایل flag برای leave کردن کانال فوری"""
         try:
+            # استفاده از دایرکتوری data برای فایل‌های flag (مشترک بین containers)
+            data_dir = os.path.join(os.getcwd(), 'data')
+            os.makedirs(data_dir, exist_ok=True)
+            
             leave_file = 'leave_channel.flag'
-            leave_path = os.path.join(os.getcwd(), leave_file)
+            leave_path = os.path.join(data_dir, leave_file)
             leave_data = {
                 'channel_id': channel_id,
                 'username': username
             }
             with open(leave_path, 'w', encoding='utf-8') as f:
                 json.dump(leave_data, f, ensure_ascii=False, indent=2)
-            print(f"🚩 فایل leave_channel.flag ایجاد شد برای channel_id: {channel_id}")
+            print(f"🚩 فایل leave_channel.flag ایجاد شد در {leave_path} برای channel_id: {channel_id}")
             return True
         except Exception as e:
             print(f"خطا در ایجاد فایل leave flag: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def read_notification_file(self) -> dict:
@@ -426,12 +451,18 @@ class AdminBot:
         
         if success:
             # دریافت channel_id اضافه شده
-            channel_info = self.db.get_channel_by_username(channel_identifier if not is_invite_link else input_text)
+            # برای invite link، از input_text استفاده می‌کنیم (همان چیزی که در دیتابیس ذخیره شده)
+            # برای username، از channel_identifier استفاده می‌کنیم
+            search_username = input_text if is_invite_link else channel_identifier
+            channel_info = self.db.get_channel_by_username(search_username)
             
             if channel_info:
                 channel_id = channel_info['id']
                 # ایجاد فایل flag برای join کردن کانال
                 self.trigger_join_channel(channel_id, channel_identifier)
+            else:
+                # اگر نتوانستیم channel_info را پیدا کنیم، سعی می‌کنیم از آخرین کانال اضافه شده استفاده کنیم
+                print(f"⚠️ نتوانستیم channel_info را برای {search_username} پیدا کنیم")
             
             await message.reply_text(
                 f"✅ کانال {channel_display} با دسته‌بندی '{category}' با موفقیت اضافه شد!\n\n"

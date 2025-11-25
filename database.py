@@ -111,6 +111,17 @@ class Database:
         cursor = conn.cursor()
         
         try:
+            # افزودن دسته‌بندی به جدول categories (اگر وجود دارد)
+            if category:
+                try:
+                    cursor.execute('''
+                        INSERT OR IGNORE INTO categories (name)
+                        VALUES (?)
+                    ''', (category,))
+                except Exception as e:
+                    print(f"خطا در افزودن دسته‌بندی '{category}' به جدول categories: {e}")
+                    # ادامه می‌دهیم حتی اگر خطا داد
+            
             # تشخیص اینکه آیا invite link است یا username
             is_invite_link = username_or_link.startswith('http') or username_or_link.startswith('t.me/+') or username_or_link.startswith('+')
             
@@ -132,16 +143,6 @@ class Database:
                 is_active = dict(existing)['is_active']
                 
                 if not is_active:
-                    # اگر category وجود دارد، آن را به جدول categories اضافه می‌کنیم
-                    if category:
-                        try:
-                            cursor.execute('''
-                                INSERT OR IGNORE INTO categories (name)
-                                VALUES (?)
-                            ''', (category,))
-                        except:
-                            pass  # اگر خطا بود، ادامه می‌دهیم
-                    
                     cursor.execute('''
                         UPDATE channels 
                         SET is_active = 1, 
@@ -160,16 +161,6 @@ class Database:
                     return False  # کانال قبلاً اضافه شده
             else:
                 # کانال جدید است
-                # اگر category وجود دارد، آن را به جدول categories اضافه می‌کنیم
-                if category:
-                    try:
-                        cursor.execute('''
-                            INSERT OR IGNORE INTO categories (name)
-                            VALUES (?)
-                        ''', (category,))
-                    except:
-                        pass  # اگر خطا بود، ادامه می‌دهیم
-                
                 cursor.execute('''
                     INSERT INTO channels (username, title, invite_link, category, added_by)
                     VALUES (?, ?, ?, ?, ?)
@@ -365,34 +356,109 @@ class Database:
             return False
     
     def get_all_categories(self) -> List[str]:
-        """دریافت لیست تمام دسته‌بندی‌های موجود"""
+        """دریافت لیست تمام دسته‌بندی‌های موجود (فقط از جدول categories)"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        # ابتدا از جدول categories
         cursor.execute('''
             SELECT name 
             FROM categories 
             ORDER BY name
         ''')
         
-        categories_from_table = [row[0] for row in cursor.fetchall()]
-        
-        # سپس از جدول channels (برای سازگاری با داده‌های قدیمی)
-        cursor.execute('''
-            SELECT DISTINCT category 
-            FROM channels 
-            WHERE category IS NOT NULL AND category != ''
-        ''')
-        
-        categories_from_channels = [row[0] for row in cursor.fetchall()]
-        
-        # ترکیب و حذف تکراری‌ها
-        all_categories = list(set(categories_from_table + categories_from_channels))
-        all_categories.sort()
+        categories = [row[0] for row in cursor.fetchall()]
         
         conn.close()
-        return all_categories
+        return categories
+    
+    def sync_categories_from_channels(self) -> int:
+        """همگام‌سازی دسته‌بندی‌های موجود در channels با جدول categories
+        
+        این متد همه دسته‌بندی‌های منحصر به فرد از جدول channels را می‌خواند
+        و آن‌هایی که در جدول categories وجود ندارند را اضافه می‌کند.
+        
+        Returns:
+            تعداد دسته‌بندی‌های جدیدی که اضافه شدند
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # دریافت همه دسته‌بندی‌های منحصر به فرد از channels
+            cursor.execute('''
+                SELECT DISTINCT category 
+                FROM channels 
+                WHERE category IS NOT NULL AND category != ''
+            ''')
+            
+            categories_from_channels = [row[0] for row in cursor.fetchall()]
+            
+            # دریافت دسته‌بندی‌های موجود در جدول categories
+            cursor.execute('SELECT name FROM categories')
+            existing_categories = {row[0] for row in cursor.fetchall()}
+            
+            # افزودن دسته‌بندی‌های جدید
+            added_count = 0
+            for category in categories_from_channels:
+                if category not in existing_categories:
+                    try:
+                        cursor.execute('''
+                            INSERT OR IGNORE INTO categories (name)
+                            VALUES (?)
+                        ''', (category,))
+                        added_count += 1
+                    except Exception as e:
+                        print(f"خطا در افزودن دسته‌بندی '{category}': {e}")
+            
+            conn.commit()
+            conn.close()
+            return added_count
+        except Exception as e:
+            print(f"خطا در همگام‌سازی دسته‌بندی‌ها: {e}")
+            conn.close()
+            return 0
+    
+    def cleanup_orphaned_categories(self) -> int:
+        """حذف دسته‌بندی‌هایی که هیچ کانال فعالی ندارند
+        
+        Returns:
+            تعداد دسته‌بندی‌های حذف شده
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # دریافت همه دسته‌بندی‌ها
+            cursor.execute('SELECT name FROM categories')
+            all_categories = [row[0] for row in cursor.fetchall()]
+            
+            # دریافت دسته‌بندی‌هایی که حداقل یک کانال فعال دارند
+            cursor.execute('''
+                SELECT DISTINCT category 
+                FROM channels 
+                WHERE is_active = 1 
+                AND category IS NOT NULL 
+                AND category != ''
+            ''')
+            categories_with_channels = {row[0] for row in cursor.fetchall()}
+            
+            # حذف دسته‌بندی‌های بدون کانال فعال
+            removed_count = 0
+            for category in all_categories:
+                if category not in categories_with_channels:
+                    try:
+                        cursor.execute('DELETE FROM categories WHERE name = ?', (category,))
+                        removed_count += 1
+                    except Exception as e:
+                        print(f"خطا در حذف دسته‌بندی '{category}': {e}")
+            
+            conn.commit()
+            conn.close()
+            return removed_count
+        except Exception as e:
+            print(f"خطا در پاکسازی دسته‌بندی‌های بدون استفاده: {e}")
+            conn.close()
+            return 0
     
     def get_categories_with_active_channels(self) -> List[str]:
         """دریافت لیست دسته‌بندی‌هایی که حداقل یک کانال فعال دارند"""
@@ -490,12 +556,20 @@ class Database:
             return False
     
     def get_channel_by_username(self, username: str) -> Optional[Dict]:
-        """دریافت اطلاعات کانال با یوزرنیم"""
+        """دریافت اطلاعات کانال با یوزرنیم یا invite link"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        username = username.lstrip('@')
-        cursor.execute('SELECT * FROM channels WHERE username = ?', (username,))
+        # برای username معمولی، @ را حذف می‌کنیم
+        # برای invite link، بدون تغییر استفاده می‌کنیم
+        if username.startswith('http') or username.startswith('t.me/+') or username.startswith('+'):
+            # این یک invite link است، بدون تغییر استفاده می‌کنیم
+            search_username = username
+        else:
+            # این یک username است، @ را حذف می‌کنیم
+            search_username = username.lstrip('@')
+        
+        cursor.execute('SELECT * FROM channels WHERE username = ?', (search_username,))
         row = cursor.fetchone()
         conn.close()
         
@@ -671,7 +745,7 @@ class Database:
                 ) latest ON c.id = latest.channel_id
                 LEFT JOIN channel_stats cs ON cs.channel_id = c.id 
                     AND cs.recorded_at = latest.max_date
-                WHERE c.is_active = 1 AND c.is_member = 1
+                WHERE c.is_active = 1
                 ORDER BY COALESCE(c.category, ''), COALESCE(cs.recorded_at, c.added_at) DESC
             ''')
         

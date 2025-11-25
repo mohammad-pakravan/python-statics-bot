@@ -20,10 +20,13 @@ class ChannelMonitor:
         self.client = None
         self.config = self.load_config()
         self.db = Database()
-        self.trigger_flag_file = 'trigger_check.flag'
+        # استفاده از دایرکتوری data برای فایل‌های flag (مشترک بین containers)
+        self.data_dir = os.path.join(os.getcwd(), 'data')
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.trigger_flag_file = os.path.join(self.data_dir, 'trigger_check.flag')
         self.notification_file = 'check_notification.json'
-        self.join_flag_file = 'join_channel.flag'
-        self.leave_flag_file = 'leave_channel.flag'
+        self.join_flag_file = os.path.join(self.data_dir, 'join_channel.flag')
+        self.leave_flag_file = os.path.join(self.data_dir, 'leave_channel.flag')
         
     def load_config(self):
         """بارگذاری تنظیمات از فایل"""
@@ -392,16 +395,36 @@ class ChannelMonitor:
                 
                 # اگر با telegram_id نشد، از username یا invite_link استفاده می‌کنیم
                 if not entity:
-                    if invite_link:
+                    if invite_link and (invite_link.startswith('http') or invite_link.startswith('t.me/+') or invite_link.startswith('+')):
+                        # این یک invite link است
                         try:
-                            # استفاده از join_channel که می‌تواند entity را برگرداند
-                            _, entity, _ = await self.join_channel(invite_link)
-                        except:
+                            # استخراج hash از لینک
+                            if invite_link.startswith('http'):
+                                if '+t.me/+' in invite_link or '/+' in invite_link:
+                                    parts = invite_link.split('+/')
+                                    if len(parts) > 1:
+                                        hash_part = parts[-1]
+                                    else:
+                                        hash_part = invite_link.split('+')[-1]
+                                else:
+                                    hash_part = invite_link.split('/')[-1].lstrip('+')
+                            else:
+                                hash_part = invite_link.lstrip('+').lstrip('t.me/')
+                            
+                            # چک کردن invite برای دریافت entity
+                            from telethon.tl.functions.messages import CheckChatInviteRequest
+                            invite = await self.client(CheckChatInviteRequest(hash_part))
+                            from telethon.tl.types import ChatInviteAlready
+                            if isinstance(invite, ChatInviteAlready):
+                                entity = invite.chat
+                        except Exception as e:
+                            print(f"⚠️ خطا در دریافت entity با invite link {invite_link}: {e}")
                             pass
                     elif username and not username.startswith('http') and not username.startswith('+'):
                         try:
                             entity = await self.client.get_entity(username)
-                        except:
+                        except Exception as e:
+                            print(f"⚠️ خطا در دریافت entity با username {username}: {e}")
                             pass
                 
                 if entity:
@@ -425,19 +448,20 @@ class ChannelMonitor:
     
     def check_trigger_flag(self) -> tuple:
         """بررسی وجود فایل flag برای بررسی فوری - برمی‌گرداند (exists, user_id)"""
-        if os.path.exists(self.trigger_flag_file):
+        flag_path = self.trigger_flag_file
+        if os.path.exists(flag_path):
             try:
                 # خواندن user_id از فایل flag (اگر وجود دارد)
                 user_id = None
                 try:
-                    with open(self.trigger_flag_file, 'r') as f:
+                    with open(flag_path, 'r') as f:
                         content = f.read().strip()
                         if content.isdigit():
                             user_id = int(content)
                 except:
                     pass
                 
-                os.remove(self.trigger_flag_file)
+                os.remove(flag_path)
                 return (True, user_id)
             except Exception as e:
                 print(f"⚠️ خطا در حذف فایل flag: {e}")
@@ -446,20 +470,25 @@ class ChannelMonitor:
     
     def check_join_flag(self) -> dict:
         """بررسی وجود فایل flag برای join کردن کانال - برمی‌گرداند dict یا None"""
-        if os.path.exists(self.join_flag_file):
+        flag_path = self.join_flag_file
+        if os.path.exists(flag_path):
             try:
-                flag_path = os.path.join(os.getcwd(), self.join_flag_file)
+                print(f"📂 فایل join flag پیدا شد: {flag_path}")
                 with open(flag_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                print(f"📄 محتوای فایل join flag: {data}")
                 
                 # حذف فایل flag
                 os.remove(flag_path)
+                print(f"🗑️ فایل join flag حذف شد")
                 return data
             except Exception as e:
                 print(f"⚠️ خطا در خواندن فایل join flag: {e}")
+                import traceback
+                traceback.print_exc()
                 # حذف فایل نامعتبر
                 try:
-                    os.remove(os.path.join(os.getcwd(), self.join_flag_file))
+                    os.remove(flag_path)
                 except:
                     pass
                 return None
@@ -467,20 +496,25 @@ class ChannelMonitor:
     
     def check_leave_flag(self) -> dict:
         """بررسی وجود فایل flag برای leave کردن کانال - برمی‌گرداند dict یا None"""
-        if os.path.exists(self.leave_flag_file):
+        flag_path = self.leave_flag_file
+        if os.path.exists(flag_path):
             try:
-                flag_path = os.path.join(os.getcwd(), self.leave_flag_file)
+                print(f"📂 فایل leave flag پیدا شد: {flag_path}")
                 with open(flag_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                print(f"📄 محتوای فایل leave flag: {data}")
                 
                 # حذف فایل flag
                 os.remove(flag_path)
+                print(f"🗑️ فایل leave flag حذف شد")
                 return data
             except Exception as e:
                 print(f"⚠️ خطا در خواندن فایل leave flag: {e}")
+                import traceback
+                traceback.print_exc()
                 # حذف فایل نامعتبر
                 try:
-                    os.remove(os.path.join(os.getcwd(), self.leave_flag_file))
+                    os.remove(flag_path)
                 except:
                     pass
                 return None
@@ -497,42 +531,95 @@ class ChannelMonitor:
             
             telegram_id = channel_info.get('telegram_id')
             invite_link = channel_info.get('invite_link')
+            actual_username = channel_info.get('username')
+            
+            print(f"🔍 تلاش برای خروج از کانال: username={actual_username}, telegram_id={telegram_id}, invite_link={invite_link}")
             
             entity = None
             
-            # تلاش برای دریافت entity
+            # روش 1: استفاده از telegram_id (بهترین روش)
             if telegram_id:
                 try:
+                    # تلاش با ID مستقیم
                     entity = await self.client.get_entity(telegram_id)
-                except:
-                    pass
+                    print(f"✅ Entity کانال با telegram_id {telegram_id} پیدا شد")
+                except Exception as e:
+                    print(f"⚠️ نتوانستیم entity را با telegram_id {telegram_id} پیدا کنیم: {e}")
+                    # تلاش با PeerChannel
+                    try:
+                        from telethon.tl.types import PeerChannel
+                        entity = await self.client.get_entity(PeerChannel(telegram_id))
+                        print(f"✅ Entity کانال با PeerChannel {telegram_id} پیدا شد")
+                    except Exception as e2:
+                        print(f"⚠️ نتوانستیم entity را با PeerChannel {telegram_id} پیدا کنیم: {e2}")
             
-            # اگر با telegram_id نشد، از username یا invite_link استفاده می‌کنیم
+            # روش 2: جستجو در dialogs (کانال‌هایی که عضو هستیم)
             if not entity:
-                if invite_link:
-                    try:
-                        _, entity, _ = await self.join_channel(invite_link)
-                    except:
-                        pass
-                elif username and not username.startswith('http') and not username.startswith('+'):
-                    try:
-                        entity = await self.client.get_entity(username)
-                    except:
-                        pass
+                try:
+                    print(f"🔍 جستجو در dialogs برای پیدا کردن کانال...")
+                    async for dialog in self.client.iter_dialogs():
+                        if hasattr(dialog.entity, 'id') and dialog.entity.id == telegram_id:
+                            entity = dialog.entity
+                            print(f"✅ Entity کانال در dialogs پیدا شد: {dialog.name}")
+                            break
+                        elif hasattr(dialog.entity, 'username') and dialog.entity.username:
+                            if dialog.entity.username == actual_username.lstrip('@'):
+                                entity = dialog.entity
+                                print(f"✅ Entity کانال در dialogs با username پیدا شد: {dialog.name}")
+                                break
+                except Exception as e:
+                    print(f"⚠️ خطا در جستجوی dialogs: {e}")
+            
+            # روش 3: استفاده از username
+            if not entity and actual_username and not actual_username.startswith('http') and not actual_username.startswith('+'):
+                try:
+                    entity = await self.client.get_entity(actual_username.lstrip('@'))
+                    print(f"✅ Entity کانال با username {actual_username} پیدا شد")
+                except Exception as e:
+                    print(f"⚠️ خطا در دریافت entity با username {actual_username}: {e}")
+            
+            # روش 4: استفاده از invite_link (آخرین راه)
+            if not entity and invite_link and (invite_link.startswith('http') or invite_link.startswith('t.me/+') or invite_link.startswith('+')):
+                try:
+                    # استخراج hash از لینک
+                    if invite_link.startswith('http'):
+                        if '+t.me/+' in invite_link or '/+' in invite_link:
+                            parts = invite_link.split('+/')
+                            if len(parts) > 1:
+                                hash_part = parts[-1]
+                            else:
+                                hash_part = invite_link.split('+')[-1]
+                        else:
+                            hash_part = invite_link.split('/')[-1].lstrip('+')
+                    else:
+                        hash_part = invite_link.lstrip('+').lstrip('t.me/')
+                    
+                    # چک کردن invite برای دریافت entity
+                    from telethon.tl.functions.messages import CheckChatInviteRequest
+                    invite = await self.client(CheckChatInviteRequest(hash_part))
+                    from telethon.tl.types import ChatInviteAlready
+                    if isinstance(invite, ChatInviteAlready):
+                        entity = invite.chat
+                        print(f"✅ Entity کانال با invite link پیدا شد")
+                except Exception as e:
+                    print(f"⚠️ خطا در دریافت entity با invite link: {e}")
             
             if entity:
                 try:
                     await self.client(LeaveChannelRequest(entity))
-                    print(f"✅ از کانال {username} خارج شدیم (خروج فوری)")
+                    print(f"✅ از کانال {actual_username} (ID: {telegram_id if telegram_id else 'N/A'}) خارج شدیم (خروج فوری)")
                     self.db.set_channel_member_status(channel_id, False)
                     return True
                 except Exception as e:
-                    print(f"❌ خطا در خروج از کانال {username}: {e}")
+                    print(f"❌ خطا در خروج از کانال {actual_username}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     # حتی در صورت خطا، is_member = 0 می‌کنیم
                     self.db.set_channel_member_status(channel_id, False)
                     return False
             else:
-                print(f"⚠️ نتوانستیم entity کانال {username} را پیدا کنیم")
+                print(f"❌ نتوانستیم entity کانال {actual_username} را پیدا کنیم")
+                print(f"   telegram_id: {telegram_id}, invite_link: {invite_link}")
                 # حتی اگر entity پیدا نشد، is_member = 0 می‌کنیم
                 self.db.set_channel_member_status(channel_id, False)
                 return False
@@ -632,7 +719,13 @@ class ChannelMonitor:
                     username = leave_flag_data.get('username')
                     if channel_id:
                         print(f"\n🚪 درخواست خروج فوری از کانال: {username} (ID: {channel_id})")
-                        await self.process_leave_channel(channel_id, username)
+                        result = await self.process_leave_channel(channel_id, username)
+                        if result:
+                            print(f"✅ خروج از کانال {username} با موفقیت انجام شد")
+                        else:
+                            print(f"❌ خروج از کانال {username} ناموفق بود")
+                    else:
+                        print(f"⚠️ فایل leave flag پیدا شد اما channel_id موجود نیست: {leave_flag_data}")
                 
                 # چک کردن فایل flag برای join کردن کانال
                 join_flag_data = self.check_join_flag()
