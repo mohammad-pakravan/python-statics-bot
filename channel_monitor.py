@@ -176,10 +176,15 @@ class ChannelMonitor:
                         hash_part = username_or_link.lstrip('+').lstrip('t.me/')
                     
                     # چک کردن invite
+                    from telethon.tl.types import ChatInvite, ChatInviteAlready, ChatInviteExpired
                     invite = await self.client(CheckChatInviteRequest(hash_part))
                     
+                    # بررسی نوع invite
+                    if isinstance(invite, ChatInviteExpired):
+                        print(f"⚠️ لینک invite منقضی شده است: {username_or_link}")
+                        return (False, None, None)
+                    
                     # اگر نیاز به join دارد
-                    from telethon.tl.types import ChatInvite
                     if isinstance(invite, ChatInvite):
                         # پیوستن به کانال
                         await self.client(ImportChatInviteRequest(hash_part))
@@ -187,7 +192,6 @@ class ChannelMonitor:
                         invite = await self.client(CheckChatInviteRequest(hash_part))
                     
                     # دریافت entity
-                    from telethon.tl.types import ChatInviteAlready
                     if isinstance(invite, ChatInviteAlready):
                         entity = invite.chat
                         telegram_id = entity.id if hasattr(entity, 'id') else None
@@ -195,7 +199,11 @@ class ChannelMonitor:
                         print(f"⚠️ نتوانستیم به کانال با لینک {username_or_link} بپیوندیم")
                         return (False, None, None)
                 except Exception as e:
-                    print(f"❌ خطا در پیوستن به کانال با لینک {username_or_link}: {e}")
+                    error_msg = str(e).lower()
+                    if 'expired' in error_msg or 'not valid' in error_msg:
+                        print(f"⚠️ لینک invite منقضی شده یا نامعتبر است: {username_or_link}")
+                    else:
+                        print(f"❌ خطا در پیوستن به کانال با لینک {username_or_link}: {e}")
                     return (False, None, None)
             else:
                 # این یک username است
@@ -267,14 +275,26 @@ class ChannelMonitor:
                             hash_part = username_or_link.lstrip('+').lstrip('t.me/')
                         
                         # چک کردن invite
+                        from telethon.tl.types import ChatInviteAlready, ChatInviteExpired
                         invite = await self.client(CheckChatInviteRequest(hash_part))
                         
+                        # بررسی نوع invite
+                        if isinstance(invite, ChatInviteExpired):
+                            print(f"⚠️ لینک invite منقضی شده است: {username_or_link}")
+                            return None
+                        
                         # دریافت entity
-                        from telethon.tl.types import ChatInviteAlready
                         if isinstance(invite, ChatInviteAlready):
                             entity = invite.chat
+                        else:
+                            print(f"⚠️ لینک invite نامعتبر است: {username_or_link}")
+                            return None
                     except Exception as e:
-                        print(f"❌ خطا در دریافت کانال با لینک {username_or_link}: {e}")
+                        error_msg = str(e).lower()
+                        if 'expired' in error_msg or 'not valid' in error_msg:
+                            print(f"⚠️ لینک invite منقضی شده یا نامعتبر است: {username_or_link}")
+                        else:
+                            print(f"❌ خطا در دریافت کانال با لینک {username_or_link}: {e}")
                         return None
                 else:
                     # این یک username است
@@ -286,6 +306,15 @@ class ChannelMonitor:
                         return None
             
             if not entity:
+                return None
+            
+            # بررسی اینکه entity یک کانال است یا نه (نه ربات یا کاربر)
+            from telethon.tl.types import Channel, ChannelForbidden, Chat, ChatForbidden
+            is_channel = isinstance(entity, (Channel, ChannelForbidden, Chat, ChatForbidden))
+            
+            if not is_channel:
+                # این یک ربات یا کاربر است، نه کانال
+                print(f"⚠️ {username_or_link} یک کانال نیست (احتمالاً ربات یا کاربر است)")
                 return None
             
             # دریافت اطلاعات کامل کانال
@@ -398,8 +427,11 @@ class ChannelMonitor:
                 else:
                     print(f"❌ خطا در ثبت آمار")
             else:
-                # اگر نتوانستیم آمار بگیریم، ممکن است عضو نباشیم
+                # اگر نتوانستیم آمار بگیریم، ممکن است عضو نباشیم یا کانال نامعتبر باشد
                 print(f"⚠️ نتوانستیم آمار کانال {display_name} را دریافت کنیم")
+                # اگر کانال یک ربات است یا نامعتبر است، is_member را 0 می‌کنیم
+                # (اما is_active را نگه می‌داریم تا کاربر بتواند آن را ببیند)
+                self.db.set_channel_member_status(channel_id, False)
             
             # تاخیر کوتاه بین درخواست‌ها
             await asyncio.sleep(2)
