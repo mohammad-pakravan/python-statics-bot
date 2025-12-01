@@ -108,6 +108,50 @@ class ChannelMonitor:
             print(f"خطا در احراز هویت: {e}")
             sys.exit(1)
     
+    def extract_invite_hash(self, invite_link: str) -> str:
+        """استخراج hash از لینک invite"""
+        # حذف فاصله‌ها و کاراکترهای اضافی
+        original_link = invite_link
+        invite_link = invite_link.strip()
+        
+        # اگر با + شروع می‌شود، + را حذف می‌کنیم
+        if invite_link.startswith('+'):
+            invite_link = invite_link[1:]
+        
+        hash_part = None
+        
+        # اگر با http شروع می‌شود
+        if invite_link.startswith('http'):
+            # استخراج قسمت بعد از آخرین /
+            if '/+' in invite_link:
+                # برای https://t.me/+ABC123
+                hash_part = invite_link.split('/+')[-1]
+            elif invite_link.endswith('/'):
+                # اگر با / تمام می‌شود
+                hash_part = invite_link.rstrip('/').split('/')[-1]
+            else:
+                # استخراج قسمت آخر
+                hash_part = invite_link.split('/')[-1]
+        elif invite_link.startswith('t.me/'):
+            # برای t.me/+ABC123 یا t.me/ABC123
+            if '/+' in invite_link:
+                hash_part = invite_link.split('/+')[-1]
+            else:
+                hash_part = invite_link.split('/')[-1]
+        else:
+            # اگر فقط hash است
+            hash_part = invite_link
+        
+        # حذف + از ابتدا (اگر وجود دارد)
+        hash_part = hash_part.lstrip('+')
+        
+        # حذف کاراکترهای اضافی از انتها (مثل ? یا #)
+        hash_part = hash_part.split('?')[0].split('#')[0]
+        
+        print(f"🔍 استخراج hash: '{original_link}' -> '{hash_part}'")
+        
+        return hash_part
+    
     async def ensure_connected(self):
         """اطمینان از اتصال کلاینت - اگر قطع شده باشد، دوباره متصل می‌شود"""
         try:
@@ -160,20 +204,9 @@ class ChannelMonitor:
             if username_or_link.startswith('http') or username_or_link.startswith('t.me/+') or username_or_link.startswith('+'):
                 # این یک invite link است
                 try:
-                    # استخراج hash از لینک
-                    if username_or_link.startswith('http'):
-                        # استخراج hash از URL - برای https://t.me/+ABC123
-                        if '+t.me/+' in username_or_link or '/+' in username_or_link:
-                            # استخراج قسمت بعد از +/
-                            parts = username_or_link.split('+/')
-                            if len(parts) > 1:
-                                hash_part = parts[-1]
-                            else:
-                                hash_part = username_or_link.split('+')[-1]
-                        else:
-                            hash_part = username_or_link.split('/')[-1].lstrip('+')
-                    else:
-                        hash_part = username_or_link.lstrip('+').lstrip('t.me/')
+                    # استخراج hash از لینک با استفاده از تابع کمکی
+                    hash_part = self.extract_invite_hash(username_or_link)
+                    print(f"🔍 Hash استخراج شده از لینک: {hash_part}")
                     
                     # چک کردن invite
                     from telethon.tl.types import ChatInvite, ChatInviteAlready, ChatInviteExpired
@@ -260,19 +293,9 @@ class ChannelMonitor:
                 if username_or_link.startswith('http') or username_or_link.startswith('t.me/+') or username_or_link.startswith('+'):
                     # این یک invite link است
                     try:
-                        # استخراج hash از لینک
-                        if username_or_link.startswith('http'):
-                            # استخراج hash از URL
-                            if '+t.me/+' in username_or_link or '/+' in username_or_link:
-                                parts = username_or_link.split('+/')
-                                if len(parts) > 1:
-                                    hash_part = parts[-1]
-                                else:
-                                    hash_part = username_or_link.split('+')[-1]
-                            else:
-                                hash_part = username_or_link.split('/')[-1].lstrip('+')
-                        else:
-                            hash_part = username_or_link.lstrip('+').lstrip('t.me/')
+                        # استخراج hash از لینک با استفاده از تابع کمکی
+                        hash_part = self.extract_invite_hash(username_or_link)
+                        print(f"🔍 Hash استخراج شده از لینک: {hash_part}")
                         
                         # چک کردن invite
                         from telethon.tl.types import ChatInviteAlready, ChatInviteExpired
@@ -478,18 +501,9 @@ class ChannelMonitor:
                     if invite_link and (invite_link.startswith('http') or invite_link.startswith('t.me/+') or invite_link.startswith('+')):
                         # این یک invite link است
                         try:
-                            # استخراج hash از لینک
-                            if invite_link.startswith('http'):
-                                if '+t.me/+' in invite_link or '/+' in invite_link:
-                                    parts = invite_link.split('+/')
-                                    if len(parts) > 1:
-                                        hash_part = parts[-1]
-                                    else:
-                                        hash_part = invite_link.split('+')[-1]
-                                else:
-                                    hash_part = invite_link.split('/')[-1].lstrip('+')
-                            else:
-                                hash_part = invite_link.lstrip('+').lstrip('t.me/')
+                            # استخراج hash از لینک با استفاده از تابع کمکی
+                            hash_part = self.extract_invite_hash(invite_link)
+                            print(f"🔍 Hash استخراج شده از لینک: {hash_part}")
                             
                             # چک کردن invite برای دریافت entity
                             from telethon.tl.functions.messages import CheckChatInviteRequest
@@ -664,18 +678,9 @@ class ChannelMonitor:
             # روش 4: استفاده از invite_link (آخرین راه)
             if not entity and invite_link and (invite_link.startswith('http') or invite_link.startswith('t.me/+') or invite_link.startswith('+')):
                 try:
-                    # استخراج hash از لینک
-                    if invite_link.startswith('http'):
-                        if '+t.me/+' in invite_link or '/+' in invite_link:
-                            parts = invite_link.split('+/')
-                            if len(parts) > 1:
-                                hash_part = parts[-1]
-                            else:
-                                hash_part = invite_link.split('+')[-1]
-                        else:
-                            hash_part = invite_link.split('/')[-1].lstrip('+')
-                    else:
-                        hash_part = invite_link.lstrip('+').lstrip('t.me/')
+                    # استخراج hash از لینک با استفاده از تابع کمکی
+                    hash_part = self.extract_invite_hash(invite_link)
+                    print(f"🔍 Hash استخراج شده از لینک: {hash_part}")
                     
                     # چک کردن invite برای دریافت entity
                     from telethon.tl.functions.messages import CheckChatInviteRequest
