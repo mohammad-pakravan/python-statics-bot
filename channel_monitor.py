@@ -7,7 +7,7 @@ import os
 import sys
 from datetime import datetime
 from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, UsernameNotOccupiedError
+from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, UsernameNotOccupiedError, InviteHashExpiredError, InviteHashInvalidError
 from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest, LeaveChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
 from database import Database
@@ -210,7 +210,21 @@ class ChannelMonitor:
                     
                     # چک کردن invite
                     from telethon.tl.types import ChatInvite, ChatInviteAlready, ChatInviteExpired
-                    invite = await self.client(CheckChatInviteRequest(hash_part))
+                    from telethon.errors import InviteHashExpiredError, InviteHashInvalidError
+                    
+                    try:
+                        invite = await self.client(CheckChatInviteRequest(hash_part))
+                    except InviteHashExpiredError:
+                        print(f"⚠️ لینک invite منقضی شده است: {username_or_link}")
+                        return (False, None, None)
+                    except InviteHashInvalidError:
+                        print(f"⚠️ لینک invite نامعتبر است: {username_or_link}")
+                        return (False, None, None)
+                    except Exception as e:
+                        print(f"❌ خطا در چک کردن invite: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        return (False, None, None)
                     
                     # بررسی نوع invite
                     if isinstance(invite, ChatInviteExpired):
@@ -219,24 +233,35 @@ class ChannelMonitor:
                     
                     # اگر نیاز به join دارد
                     if isinstance(invite, ChatInvite):
-                        # پیوستن به کانال
-                        await self.client(ImportChatInviteRequest(hash_part))
-                        # بعد از join، دوباره چک می‌کنیم
-                        invite = await self.client(CheckChatInviteRequest(hash_part))
+                        print(f"📥 در حال پیوستن به کانال با invite link...")
+                        try:
+                            # پیوستن به کانال
+                            await self.client(ImportChatInviteRequest(hash_part))
+                            # بعد از join، دوباره چک می‌کنیم
+                            invite = await self.client(CheckChatInviteRequest(hash_part))
+                        except Exception as e:
+                            print(f"❌ خطا در پیوستن به کانال: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            return (False, None, None)
                     
                     # دریافت entity
                     if isinstance(invite, ChatInviteAlready):
                         entity = invite.chat
                         telegram_id = entity.id if hasattr(entity, 'id') else None
-                    else:
+                        print(f"✅ با موفقیت به کانال پیوستیم (از قبل عضو بودیم)")
+                    elif isinstance(invite, ChatInvite):
+                        # اگر هنوز ChatInvite است، یعنی join موفق نبود
                         print(f"⚠️ نتوانستیم به کانال با لینک {username_or_link} بپیوندیم")
+                        return (False, None, None)
+                    else:
+                        print(f"⚠️ نوع invite نامعتبر: {type(invite)}")
                         return (False, None, None)
                 except Exception as e:
                     error_msg = str(e).lower()
-                    if 'expired' in error_msg or 'not valid' in error_msg:
-                        print(f"⚠️ لینک invite منقضی شده یا نامعتبر است: {username_or_link}")
-                    else:
-                        print(f"❌ خطا در پیوستن به کانال با لینک {username_or_link}: {e}")
+                    print(f"❌ خطا در پیوستن به کانال با لینک {username_or_link}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     return (False, None, None)
             else:
                 # این یک username است
