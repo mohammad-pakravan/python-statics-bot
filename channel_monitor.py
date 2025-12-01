@@ -108,9 +108,51 @@ class ChannelMonitor:
             print(f"خطا در احراز هویت: {e}")
             sys.exit(1)
     
+    async def ensure_connected(self):
+        """اطمینان از اتصال کلاینت - اگر قطع شده باشد، دوباره متصل می‌شود"""
+        try:
+            if not self.client:
+                print("⚠️ کلاینت وجود ندارد، در حال تنظیم...")
+                await self.setup_client()
+                return
+            
+            # بررسی اتصال
+            if not self.client.is_connected():
+                print("⚠️ کلاینت قطع شده است، در حال اتصال مجدد...")
+                await self.client.connect()
+                
+                # بررسی احراز هویت
+                if not await self.client.is_user_authorized():
+                    print("⚠️ کاربر مجاز نیست، نیاز به احراز هویت مجدد")
+                    await self.authenticate()
+                else:
+                    # تست اتصال با get_me
+                    try:
+                        me = await self.client.get_me()
+                        print(f"✅ کلاینت دوباره متصل شد (کاربر: {me.first_name})")
+                    except Exception as e:
+                        print(f"⚠️ خطا در تست اتصال: {e}")
+                        # اگر تست ناموفق بود، دوباره setup کنیم
+                        await self.setup_client()
+        except Exception as e:
+            print(f"❌ خطا در اتصال مجدد کلاینت: {e}")
+            import traceback
+            traceback.print_exc()
+            # تلاش برای تنظیم مجدد کلاینت
+            try:
+                print("🔄 تلاش برای تنظیم مجدد کلاینت...")
+                await self.setup_client()
+            except Exception as e2:
+                print(f"❌ خطا در تنظیم مجدد کلاینت: {e2}")
+                import traceback
+                traceback.print_exc()
+    
     async def join_channel(self, username_or_link: str) -> tuple:
         """عضویت در کانال و برگرداندن (success, entity, telegram_id)"""
         try:
+            # اطمینان از اتصال قبل از استفاده
+            await self.ensure_connected()
+            
             entity = None
             telegram_id = None
             
@@ -190,6 +232,9 @@ class ChannelMonitor:
     async def get_channel_stats(self, username_or_link: str, channel_id: int = None) -> dict:
         """دریافت آمار کانال (پشتیبانی از username و invite link)"""
         try:
+            # اطمینان از اتصال قبل از استفاده
+            await self.ensure_connected()
+            
             entity = None
             
             # اگر channel_id داریم، ابتدا سعی می‌کنیم از telegram_id استفاده کنیم
@@ -370,6 +415,9 @@ class ChannelMonitor:
     
     async def leave_inactive_channels(self):
         """خروج از کانال‌های غیرفعال"""
+        # اطمینان از اتصال قبل از استفاده
+        await self.ensure_connected()
+        
         channels_to_leave = self.db.get_channels_to_leave()
         
         if not channels_to_leave:
@@ -523,6 +571,9 @@ class ChannelMonitor:
     async def process_leave_channel(self, channel_id: int, username: str):
         """خروج از کانال به صورت فوری"""
         try:
+            # اطمینان از اتصال قبل از استفاده
+            await self.ensure_connected()
+            
             # دریافت اطلاعات کانال از دیتابیس
             channel_info = self.db.get_channel_by_id(channel_id)
             if not channel_info:
@@ -637,6 +688,9 @@ class ChannelMonitor:
     async def process_join_channel(self, channel_id: int, channel_identifier: str):
         """پیوندن به کانال و تنظیم is_member"""
         try:
+            # اطمینان از اتصال قبل از استفاده
+            await self.ensure_connected()
+            
             success, entity, telegram_id = await self.join_channel(channel_identifier)
             
             if success and entity:
