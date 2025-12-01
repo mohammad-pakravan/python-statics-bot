@@ -209,26 +209,29 @@ class ChannelMonitor:
                     print(f"🔍 Hash استخراج شده از لینک: {hash_part}")
                     
                     # چک کردن invite
-                    from telethon.tl.types import ChatInvite, ChatInviteAlready, ChatInviteExpired
+                    from telethon.tl.types import ChatInvite, ChatInviteAlready
                     from telethon.errors import InviteHashExpiredError, InviteHashInvalidError
                     
                     try:
                         invite = await self.client(CheckChatInviteRequest(hash_part))
-                    except InviteHashExpiredError:
+                    except InviteHashExpiredError as e:
                         print(f"⚠️ لینک invite منقضی شده است: {username_or_link}")
+                        print(f"   خطا: {e}")
                         return (False, None, None)
-                    except InviteHashInvalidError:
+                    except InviteHashInvalidError as e:
                         print(f"⚠️ لینک invite نامعتبر است: {username_or_link}")
+                        print(f"   خطا: {e}")
                         return (False, None, None)
                     except Exception as e:
-                        print(f"❌ خطا در چک کردن invite: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        return (False, None, None)
-                    
-                    # بررسی نوع invite
-                    if isinstance(invite, ChatInviteExpired):
-                        print(f"⚠️ لینک invite منقضی شده است: {username_or_link}")
+                        error_msg = str(e).lower()
+                        if 'expired' in error_msg:
+                            print(f"⚠️ لینک invite منقضی شده است: {username_or_link}")
+                        elif 'invalid' in error_msg or 'not valid' in error_msg:
+                            print(f"⚠️ لینک invite نامعتبر است: {username_or_link}")
+                        else:
+                            print(f"❌ خطا در چک کردن invite: {e}")
+                            import traceback
+                            traceback.print_exc()
                         return (False, None, None)
                     
                     # اگر نیاز به join دارد
@@ -323,12 +326,29 @@ class ChannelMonitor:
                         print(f"🔍 Hash استخراج شده از لینک: {hash_part}")
                         
                         # چک کردن invite
-                        from telethon.tl.types import ChatInviteAlready, ChatInviteExpired
-                        invite = await self.client(CheckChatInviteRequest(hash_part))
+                        from telethon.tl.types import ChatInviteAlready
+                        from telethon.errors import InviteHashExpiredError, InviteHashInvalidError
                         
-                        # بررسی نوع invite
-                        if isinstance(invite, ChatInviteExpired):
+                        try:
+                            invite = await self.client(CheckChatInviteRequest(hash_part))
+                        except InviteHashExpiredError as e:
                             print(f"⚠️ لینک invite منقضی شده است: {username_or_link}")
+                            print(f"   خطا: {e}")
+                            return None
+                        except InviteHashInvalidError as e:
+                            print(f"⚠️ لینک invite نامعتبر است: {username_or_link}")
+                            print(f"   خطا: {e}")
+                            return None
+                        except Exception as e:
+                            error_msg = str(e).lower()
+                            if 'expired' in error_msg:
+                                print(f"⚠️ لینک invite منقضی شده است: {username_or_link}")
+                            elif 'invalid' in error_msg or 'not valid' in error_msg:
+                                print(f"⚠️ لینک invite نامعتبر است: {username_or_link}")
+                            else:
+                                print(f"❌ خطا در چک کردن invite: {e}")
+                                import traceback
+                                traceback.print_exc()
                             return None
                         
                         # دریافت entity
